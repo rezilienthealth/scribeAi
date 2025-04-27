@@ -1,0 +1,340 @@
+<!-- JavaScript for ScribeAI Medical Transcription & Notes -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  // --- Recording and Upload Logic ---
+  let mediaRecorder, audioChunks = [], recordingTimer, recordingSeconds = 0, isRecording = false, currentVisitId = null;
+
+  document.addEventListener('DOMContentLoaded', function() {
+    // Tab switching
+    document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(tabEl => {
+      tabEl.addEventListener('click', function(event) {
+        event.preventDefault();
+        document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('show', 'active'));
+        document.querySelector(this.getAttribute('data-bs-target')).classList.add('show', 'active');
+        document.querySelectorAll('.nav-link').forEach(link => link.classList.remove('active'));
+        this.classList.add('active');
+        if (this.id === 'visits-tab') loadVisits();
+      });
+    });
+    setupEventListeners();
+    checkMicrophonePermission();
+  });
+
+  function setupEventListeners() {
+    document.getElementById('recordButton').addEventListener('click', toggleRecording);
+    document.getElementById('audioFileInput').addEventListener('change', function() {
+      document.getElementById('uploadButton').disabled = !this.files.length;
+    });
+    document.getElementById('uploadButton').addEventListener('click', processAudioFile);
+  }
+
+  function checkMicrophonePermission() {
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => stream.getTracks().forEach(track => track.stop()))
+        .catch(err => {
+          document.getElementById('recordButton').disabled = true;
+          document.getElementById('recordingStatus').textContent = 'Microphone access denied. Please enable in browser settings.';
+        });
+    } else {
+      document.getElementById('recordButton').disabled = true;
+      document.getElementById('recordingStatus').textContent = 'Recording not supported in this browser.';
+    }
+  }
+
+  function toggleRecording() { isRecording ? stopRecording() : startRecording(); }
+  function startRecording() {
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+      isRecording = true;
+      document.getElementById('recordButton').innerHTML = '<i class="fas fa-stop"></i>';
+      document.getElementById('recordButton').classList.add('recording');
+      document.getElementById('recordingStatus').textContent = 'Recording...';
+      document.getElementById('recordingTime').classList.remove('hidden');
+      recordingSeconds = 0; updateRecordingTime();
+      recordingTimer = setInterval(updateRecordingTime, 1000);
+      mediaRecorder = new MediaRecorder(stream); audioChunks = [];
+      mediaRecorder.addEventListener('dataavailable', e => audioChunks.push(e.data));
+      mediaRecorder.addEventListener('stop', function() {
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        processRecordedAudio(audioBlob);
+      });
+      mediaRecorder.start();
+    }).catch(err => alert('Error accessing microphone. Please check permissions.'));
+  }
+  function stopRecording() {
+    if (mediaRecorder && isRecording) {
+      isRecording = false;
+      document.getElementById('recordButton').innerHTML = '<i class="fas fa-microphone"></i>';
+      document.getElementById('recordButton').classList.remove('recording');
+      document.getElementById('recordingStatus').textContent = 'Processing...';
+      clearInterval(recordingTimer);
+      mediaRecorder.stop();
+      mediaRecorder.stream.getTracks().forEach(track => track.stop());
+    }
+  }
+  function updateRecordingTime() {
+    recordingSeconds++;
+    const m = String(Math.floor(recordingSeconds / 60)).padStart(2, '0');
+    const s = String(recordingSeconds % 60).padStart(2, '0');
+    document.getElementById('recordingTime').textContent = `${m}:${s}`;
+  }
+  function processRecordedAudio(audioBlob) {
+    showLoadingOverlay('Processing audio and generating clinical note...');
+    const reader = new FileReader();
+    reader.readAsDataURL(audioBlob);
+    reader.onloadend = function() {
+      google.script.run.withSuccessHandler(handleProcessingSuccess).withFailureHandler(handleProcessingError)
+        .processAudio(reader.result, audioBlob.type);
+    };
+  }
+  function processAudioFile() {
+    const fileInput = document.getElementById('audioFileInput');
+    if (!fileInput.files.length) return alert('Please select an audio file first.');
+    showLoadingOverlay('Processing audio file and generating clinical note...');
+    const reader = new FileReader();
+    reader.readAsDataURL(fileInput.files[0]);
+    reader.onloadend = function() {
+      google.script.run.withSuccessHandler(handleProcessingSuccess).withFailureHandler(handleProcessingError)
+        .processAudio(reader.result, fileInput.files[0].type);
+    };
+  }
+  function handleProcessingSuccess(result) {
+    hideLoadingOverlay();
+    if (result.success) {
+      currentVisitId = result.visitId;
+      displayResults(result);
+    } else {
+      alert('Error: ' + (result.error || 'Unknown error occurred'));
+      document.getElementById('recordingStatus').textContent = 'Error occurred. Please try again.';
+    }
+  }
+  function handleProcessingError(error) {
+    hideLoadingOverlay();
+    alert('Error: ' + (error.message || 'An error occurred during processing.'));
+    document.getElementById('recordingStatus').textContent = 'Error occurred. Please try again.';
+  }
+  function displayResults(result) {
+    document.getElementById('resultContainer').classList.remove('hidden');
+    document.getElementById('transcriptContainer').textContent = result.transcript;
+    document.getElementById('notePreview').innerHTML = formatSOAPNote(result.soapNote);
+    document.getElementById('recordingStatus').textContent = 'Click to start recording';
+    document.getElementById('recordingTime').classList.add('hidden');
+    document.getElementById('audioFileInput').value = '';
+    document.getElementById('uploadButton').disabled = true;
+    if (result.parsedSoap) {
+      document.getElementById('subjectiveField').value = result.parsedSoap.subjective || '';
+      document.getElementById('objectiveField').value = result.parsedSoap.objective || '';
+      document.getElementById('assessmentField').value = result.parsedSoap.assessment || '';
+      document.getElementById('planField').value = result.parsedSoap.plan || '';
+    }
+  }
+  function formatSOAPNote(note) {
+    return note.replace(/Subjective:/g, '<strong class="text-primary">Subjective:</strong>')
+      .replace(/Objective:/g, '<strong class="text-primary">Objective:</strong>')
+      .replace(/Assessment:/g, '<strong class="text-primary">Assessment:</strong>')
+      .replace(/Plan:/g, '<strong class="text-primary">Plan:</strong>');
+  }
+  // --- Note Editing ---
+  function editNote() {
+    document.getElementById('notePreview').classList.add('hidden');
+    document.getElementById('noteEditor').classList.remove('hidden');
+  }
+  function cancelEdit() {
+    document.getElementById('noteEditor').classList.add('hidden');
+    document.getElementById('notePreview').classList.remove('hidden');
+  }
+  function saveNoteChanges() {
+    showLoadingOverlay('Saving changes...');
+    const soapData = {
+      subjective: document.getElementById('subjectiveField').value,
+      objective: document.getElementById('objectiveField').value,
+      assessment: document.getElementById('assessmentField').value,
+      plan: document.getElementById('planField').value
+    };
+    google.script.run.withSuccessHandler(function(success) {
+      hideLoadingOverlay();
+      if (success) {
+        document.getElementById('notePreview').innerHTML =
+          `<strong class="text-primary">Subjective:</strong> ${soapData.subjective}<br><br>` +
+          `<strong class="text-primary">Objective:</strong> ${soapData.objective}<br><br>` +
+          `<strong class="text-primary">Assessment:</strong> ${soapData.assessment}<br><br>` +
+          `<strong class="text-primary">Plan:</strong> ${soapData.plan}`;
+        document.getElementById('noteEditor').classList.add('hidden');
+        document.getElementById('notePreview').classList.remove('hidden');
+        alert('Note updated successfully!');
+      } else {
+        alert('Error updating note. Please try again.');
+      }
+    }).withFailureHandler(function(error) {
+      hideLoadingOverlay();
+      alert('Error: ' + (error.message || 'An error occurred while saving.'));
+    }).updateVisit(currentVisitId, soapData);
+  }
+  function finalizeNote() {
+    if (!confirm('Are you sure you want to finalize this note? This will mark it as reviewed.')) return;
+    showLoadingOverlay('Finalizing note...');
+    const soapData = {
+      subjective: document.getElementById('subjectiveField').value,
+      objective: document.getElementById('objectiveField').value,
+      assessment: document.getElementById('assessmentField').value,
+      plan: document.getElementById('planField').value,
+      status: 'Reviewed'
+    };
+    google.script.run.withSuccessHandler(function(success) {
+      hideLoadingOverlay();
+      if (success) alert('Note finalized successfully!');
+      else alert('Error finalizing note. Please try again.');
+    }).withFailureHandler(function(error) {
+      hideLoadingOverlay();
+      alert('Error: ' + (error.message || 'An error occurred while finalizing.'));
+    }).updateVisit(currentVisitId, soapData);
+  }
+
+  // --- Visit History ---
+  function loadVisits() {
+    document.getElementById('visitList').innerHTML =
+      '<div class="text-center py-4 text-muted"><i class="fas fa-spinner fa-spin me-2"></i> Loading visits...</div>';
+    google.script.run.withSuccessHandler(displayVisits).withFailureHandler(function(error) {
+      document.getElementById('visitList').innerHTML =
+        '<div class="text-center py-4 text-danger">Error loading visits. Please try again.</div>';
+    }).getAllVisits();
+  }
+  function displayVisits(visits) {
+    const visitList = document.getElementById('visitList');
+    if (!visits || visits.length === 0) {
+      visitList.innerHTML = '<div class="text-center py-4 text-muted">No visits found.</div>';
+      return;
+    }
+    visits.sort((a, b) => new Date(b.date) - new Date(a.date));
+    let html = '';
+    visits.forEach(visit => {
+      const date = new Date(visit.date).toLocaleDateString();
+      const status = visit.status || 'Pending';
+      const statusClass = status === 'Reviewed' ? 'text-success' : 'text-warning';
+      html += `
+        <div class="visit-item" data-visit-id="${visit.visit_id}" onclick="viewVisit('${visit.visit_id}')">
+          <div class="d-flex justify-content-between align-items-center">
+            <div>
+              <div class="fw-bold">${visit.patient_id || 'Unknown Patient'}</div>
+              <div class="visit-date">${date}</div>
+            </div>
+            <span class="badge ${statusClass}">${status}</span>
+          </div>
+        </div>
+      `;
+    });
+    visitList.innerHTML = html;
+  }
+  function viewVisit(visitId) {
+    document.querySelectorAll('.visit-item').forEach(item => item.classList.remove('active'));
+    document.querySelector(`.visit-item[data-visit-id="${visitId}"]`).classList.add('active');
+    document.getElementById('visitDetails').classList.remove('hidden');
+    document.getElementById('visitDetails').innerHTML =
+      '<div class="text-center py-4"><i class="fas fa-spinner fa-spin me-2"></i> Loading visit details...</div>';
+    google.script.run.withSuccessHandler(displayVisitDetails).withFailureHandler(function(error) {
+      document.getElementById('visitDetails').innerHTML =
+        '<div class="text-center py-4 text-danger">Error loading visit details. Please try again.</div>';
+    }).getVisitDetails(visitId);
+  }
+  function displayVisitDetails(visit) {
+    if (!visit) {
+      document.getElementById('visitDetails').innerHTML =
+        '<div class="text-center py-4 text-muted">Visit not found.</div>';
+      return;
+    }
+    currentVisitId = visit.visit_id;
+    const date = new Date(visit.date).toLocaleString();
+    let html = `
+      <div class="mb-3 d-flex justify-content-between align-items-center">
+        <h5>Visit Details <span class="text-muted fs-6">${date}</span></h5>
+        <div>
+          <button onclick="editVisitNote()" class="btn btn-sm btn-outline-primary">
+            <i class="fas fa-edit me-1"></i> Edit
+          </button>
+          ${visit.status !== 'Reviewed' ? 
+            `<button onclick="finalizeVisitNote()" class="btn btn-sm btn-primary ms-2">
+              <i class="fas fa-check me-1"></i> Finalize
+             </button>` : ''}
+        </div>
+      </div>
+      <div class="soap-section">
+        <div class="soap-header"><span>Subjective</span></div>
+        <div class="soap-content" id="visitSubjective">${visit.subjective || 'No subjective information recorded.'}</div>
+      </div>
+      <div class="soap-section">
+        <div class="soap-header"><span>Objective</span></div>
+        <div class="soap-content" id="visitObjective">${visit.objective || 'No objective information recorded.'}</div>
+      </div>
+      <div class="soap-section">
+        <div class="soap-header"><span>Assessment</span></div>
+        <div class="soap-content" id="visitAssessment">${visit.assessment || 'No assessment recorded.'}</div>
+      </div>
+      <div class="soap-section">
+        <div class="soap-header"><span>Plan</span></div>
+        <div class="soap-content" id="visitPlan">${visit.plan || 'No plan recorded.'}</div>
+      </div>
+      <div class="transcript-section">
+        <h6>Transcript</h6>
+        <div>${visit.transcript || 'No transcript available.'}</div>
+      </div>
+    `;
+    document.getElementById('visitDetails').innerHTML = html;
+  }
+  function editVisitNote() {
+    ['Subjective', 'Objective', 'Assessment', 'Plan'].forEach(section => {
+      const contentDiv = document.getElementById(`visit${section}`);
+      const content = contentDiv.textContent;
+      contentDiv.innerHTML = `
+        <textarea id="edit${section}" class="form-control">${content}</textarea>
+        <button onclick="saveVisitSection('${section}')" class="btn btn-sm btn-primary mt-2 save-btn">
+          Save ${section}
+        </button>
+      `;
+      contentDiv.classList.add('editing');
+    });
+  }
+  function saveVisitSection(section) {
+    const newContent = document.getElementById(`edit${section}`).value;
+    const contentDiv = document.getElementById(`visit${section}`);
+    contentDiv.innerHTML = newContent;
+    contentDiv.classList.remove('editing');
+    const updateData = {};
+    updateData[section.toLowerCase()] = newContent;
+    google.script.run.withSuccessHandler(function(success) {
+      if (!success) alert(`Error updating ${section}. Please try again.`);
+    }).withFailureHandler(function(error) {
+      alert('Error: ' + (error.message || 'An error occurred while saving.'));
+    }).updateVisit(currentVisitId, updateData);
+  }
+  function finalizeVisitNote() {
+    if (!confirm('Are you sure you want to finalize this note? This will mark it as reviewed.')) return;
+    showLoadingOverlay('Finalizing note...');
+    google.script.run.withSuccessHandler(function(success) {
+      hideLoadingOverlay();
+      if (success) {
+        alert('Note finalized successfully!');
+        loadVisits();
+      } else alert('Error finalizing note. Please try again.');
+    }).withFailureHandler(function(error) {
+      hideLoadingOverlay();
+      alert('Error: ' + (error.message || 'An error occurred while finalizing.'));
+    }).updateVisit(currentVisitId, { status: 'Reviewed' });
+  }
+  // --- Loading Overlay ---
+  function showLoadingOverlay(message) {
+    let overlay = document.getElementById('loadingOverlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'loadingOverlay';
+      overlay.className = 'loading-overlay';
+      overlay.innerHTML = `<div class="spinner"></div><p id="loadingMessage"></p>`;
+      document.body.appendChild(overlay);
+    }
+    document.getElementById('loadingMessage').textContent = message || 'Loading...';
+    overlay.style.display = 'flex';
+  }
+  function hideLoadingOverlay() {
+    const overlay = document.getElementById('loadingOverlay');
+    if (overlay) overlay.style.display = 'none';
+  }
+</script>
