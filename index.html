@@ -3,126 +3,206 @@
 <head>
   <base target="_top">
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI Clinical Note Generator</title>
-  <?!= include('stylesheet'); ?>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>ScribeAI - Medical Transcription</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css">
+  <style>
+    /* Inline styles */
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background-color: #f8f9fa;
+      margin: 0;
+      padding: 0;
+    }
+    header {
+      text-align: center;
+      margin: 10px 0;
+      padding: 10px;
+    }
+    .card {
+      margin-bottom: 15px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .btn-record {
+      background-color: #dc3545;
+      color: white;
+    }
+    .btn-stop {
+      background-color: #6c757d;
+      color: white;
+    }
+    #loadingOverlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0,0,0,0.5);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+      display: none;
+    }
+    .spinner-border {
+      width: 3rem;
+      height: 3rem;
+    }
+    .loading-text {
+      color: white;
+      margin-top: 10px;
+    }
+    /* Mobile optimizations */
+    @media (max-width: 768px) {
+      .container {
+        padding: 8px;
+      }
+      h1 {
+        font-size: 1.8rem;
+        margin-bottom: 5px;
+      }
+      .subtitle {
+        font-size: 0.9rem;
+        margin-bottom: 10px;
+      }
+      .card-body {
+        padding: 15px;
+      }
+      .btn {
+        width: 100%;
+        margin-bottom: 8px;
+      }
+    }
+  </style>
+  <?!= include('bootstrap'); ?>
 </head>
 <body>
   <div class="container">
     <header>
       <h1>ScribeAI</h1>
-      <p class="subtitle">AI-Powered Clinical Note Generator</p>
+      <p class="subtitle">AI-Powered Medical Transcription</p>
     </header>
     
-    <div class="tabs">
-      <button class="tab-btn active" onclick="showTab('record-tab')">Record</button>
-      <button class="tab-btn" onclick="showTab('history-tab')">History</button>
-    </div>
-    
-    <div id="record-tab" class="tab-content active">
-      <div class="card">
-        <h2>Record or Upload Conversation</h2>
-        
-        <div class="audio-controls">
-          <div id="recorder-container">
-            <button id="recordButton" class="btn primary">
-              <i class="fas fa-microphone"></i> Start Recording
-            </button>
-            <div id="recordingStatus" class="hidden">
-              <span id="recordingTime">00:00</span>
-              <div class="recording-indicator"></div>
+    <!-- Main content area with simplified layout -->
+    <div class="row">
+      <!-- Settings Panel - Simplified -->
+      <div class="col-md-12 mb-3">
+        <div class="card">
+          <div class="card-header bg-primary text-white">
+            <h5 class="mb-0">Settings</h5>
+          </div>
+          <div class="card-body">
+            <div class="row">
+              <div class="col-md-6 col-sm-12 mb-3">
+                <div class="form-group">
+                  <label for="specialtySelect">Medical Specialty:</label>
+                  <select class="form-control" id="specialtySelect">
+                    <option value="general">General Practice</option>
+                    <option value="cardiology">Cardiology</option>
+                    <option value="dermatology">Dermatology</option>
+                    <option value="neurology">Neurology</option>
+                    <option value="orthopedics">Orthopedics</option>
+                    <option value="pediatrics">Pediatrics</option>
+                    <option value="psychiatry">Psychiatry</option>
+                  </select>
+                </div>
+              </div>
+              <div class="col-md-6 col-sm-12 mb-3">
+                <div class="form-group">
+                  <label for="noteLengthSelect">Note Detail Level:</label>
+                  <select class="form-control" id="noteLengthSelect">
+                    <option value="concise">Concise</option>
+                    <option value="standard" selected>Standard</option>
+                    <option value="detailed">Detailed</option>
+                  </select>
+                </div>
+              </div>
             </div>
           </div>
-          
-          <div class="divider">OR</div>
-          
-          <div class="upload-container">
-            <label for="audioFile" class="btn secondary">
-              <i class="fas fa-upload"></i> Upload Audio
-            </label>
-            <input type="file" id="audioFile" accept="audio/*" class="hidden">
-            <span id="fileName"></span>
-          </div>
-        </div>
-        
-        <button id="generateButton" class="btn primary full-width" disabled>
-          <i class="fas fa-magic"></i> Generate Clinical Note
-        </button>
-        
-        <div id="processingStatus" class="hidden">
-          <div class="spinner"></div>
-          <p>Processing audio and generating note...</p>
         </div>
       </div>
       
-      <div id="resultContainer" class="hidden">
+      <!-- Recording Section - Simplified -->
+      <div class="col-md-12">
         <div class="card">
-          <h2>Generated Clinical Note</h2>
-          <div class="note-actions">
-            <button onclick="editNote()" class="btn secondary small">
-              <i class="fas fa-edit"></i> Edit
-            </button>
-            <button onclick="finalizeNote()" class="btn primary small">
-              <i class="fas fa-check"></i> Finalize
-            </button>
+          <div class="card-header bg-primary text-white">
+            <h5 class="mb-0">Record Audio</h5>
           </div>
-          
-          <div id="notePreview" class="soap-note"></div>
-          
-          <div id="noteEditor" class="hidden">
-            <div class="form-group">
-              <label for="subjectiveField">Subjective</label>
-              <textarea id="subjectiveField" rows="4"></textarea>
+          <div class="card-body">
+            <div class="d-flex flex-column align-items-center">
+              <!-- Record Button - Larger for mobile -->
+              <button id="recordButton" class="btn btn-lg btn-danger mb-3" style="width: 100%; max-width: 300px;">
+                <i class="fas fa-microphone"></i> Start Recording
+              </button>
+              
+              <!-- Recording Status -->
+              <div id="recordingStatus" class="hidden text-center mb-3">
+                <div class="d-flex align-items-center justify-content-center">
+                  <span id="recordingTime" class="me-2 fw-bold">00:00</span>
+                  <div class="recording-indicator"></div>
+                </div>
+              </div>
+              
+              <!-- Real-time Transcript - Improved for mobile -->
+              <div id="realTimeTranscript" class="w-100 p-3 border rounded mb-3" style="display: none; max-height: 200px; overflow-y: auto; background-color: #f8f9fa;">
+                <p class="small text-muted mb-1">Real-time transcription:</p>
+                <div id="transcriptText" class="p-2"></div>
+              </div>
+              
+              <!-- Upload Option - Simplified -->
+              <div class="text-center mb-3 w-100">
+                <div class="divider mb-3">OR</div>
+                <label for="audioFileInput" class="btn btn-outline-secondary" style="width: 100%; max-width: 300px;">
+                  <i class="fas fa-upload"></i> Upload Audio
+                </label>
+                <input type="file" id="audioFileInput" accept="audio/*" class="hidden">
+                <div id="fileName" class="mt-2 small text-muted"></div>
+              </div>
+              
+              <!-- Generate Button -->
+              <button id="generateButton" class="btn btn-primary mt-3" disabled style="width: 100%; max-width: 300px;">
+                <i class="fas fa-magic"></i> Generate Clinical Note
+              </button>
             </div>
-            <div class="form-group">
-              <label for="objectiveField">Objective</label>
-              <textarea id="objectiveField" rows="4"></textarea>
+            
+            <!-- Processing Status -->
+            <div id="processingStatus" class="hidden text-center mt-3">
+              <div class="spinner"></div>
+              <p>Processing audio and generating note...</p>
             </div>
-            <div class="form-group">
-              <label for="assessmentField">Assessment</label>
-              <textarea id="assessmentField" rows="4"></textarea>
-            </div>
-            <div class="form-group">
-              <label for="planField">Plan</label>
-              <textarea id="planField" rows="4"></textarea>
-            </div>
-            <div class="form-group">
-              <label for="recommendationsField">Recommendations</label>
-              <textarea id="recommendationsField" rows="2"></textarea>
-            </div>
-            <button onclick="saveNoteChanges()" class="btn primary">Save Changes</button>
-            <button onclick="cancelEdit()" class="btn secondary">Cancel</button>
           </div>
-        </div>
-        
-        <div class="card">
-          <h2>Transcript</h2>
-          <div id="transcriptContainer" class="transcript"></div>
         </div>
       </div>
-    </div>
-    
-    <div id="history-tab" class="tab-content">
-      <div class="card">
-        <h2>Visit History</h2>
-        <div id="visitsTable" class="table-container">
-          <table>
-            <thead>
-              <tr>
-                <th>Date</th>
-                <th>Patient ID</th>
-                <th>Provider</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody id="visitsTableBody">
-              <!-- Visits will be loaded here -->
-            </tbody>
-          </table>
-        </div>
-        <div id="noVisits" class="hidden">
-          <p>No visits recorded yet.</p>
+      
+      <!-- Results Section -->
+      <div class="col-md-12 mt-3">
+        <div id="resultSection" style="display: none;">
+          <div class="card mb-3">
+            <div class="card-header bg-success text-white">
+              <h5 class="mb-0">Transcript</h5>
+            </div>
+            <div class="card-body">
+              <div id="transcriptResult" class="p-3 bg-light rounded"></div>
+            </div>
+          </div>
+          
+          <div class="card mb-3">
+            <div class="card-header bg-success text-white">
+              <h5 class="mb-0">SOAP Note</h5>
+            </div>
+            <div class="card-body">
+              <div id="noteResult" class="p-3 bg-light rounded"></div>
+              
+              <!-- Simplified Feedback Section -->
+              <div class="mt-4">
+                <h6>Improve this note:</h6>
+                <textarea class="form-control mb-3" id="improvedNote" rows="6"></textarea>
+                <button class="btn btn-primary" id="submitTraining">Submit Improved Note</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>

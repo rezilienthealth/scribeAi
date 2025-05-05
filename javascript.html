@@ -1,31 +1,325 @@
 <!-- JavaScript for ScribeAI Medical Transcription & Notes -->
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+  console.log("--- ScribeAI JavaScript Version: 2 ---");
+  /**
+   * Converts an ArrayBuffer to a Base64 string
+   */
+  function arrayBufferToBase64(buffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return window.btoa(binary);
+  }
+  
+  /**
+   * Converts an audio file to WAV format using Web Audio API
+   * @param {File} audioFile - The audio file to convert
+   * @param {Function} callback - Called with the resulting WAV blob
+   */
+  function convertAudioToWav(audioFile, callback) {
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const reader = new FileReader();
+    
+    reader.onload = function(e) {
+      console.log("Audio file loaded, decoding...");
+      audioContext.decodeAudioData(e.target.result)
+        .then(function(audioBuffer) {
+          console.log("Audio decoded successfully, channels:", audioBuffer.numberOfChannels);
+          
+          // Process the audio (downsample and convert to mono)
+          processAudioBuffer(audioBuffer)
+            .then(function(processedBlob) {
+              console.log("Audio processing complete, size:", processedBlob.size);
+              callback(processedBlob);
+            })
+            .catch(function(err) {
+              console.error("Error processing audio:", err);
+              hideLoadingOverlay();
+              alert('Error processing audio: ' + err.message);
+            });
+        })
+        .catch(function(err) {
+          console.error("Error decoding audio data:", err);
+          hideLoadingOverlay();
+          alert('Error converting audio: ' + err.message);
+        });
+    };
+    
+    reader.onerror = function() {
+      hideLoadingOverlay();
+      alert('Error reading the audio file');
+    };
+    
+    reader.readAsArrayBuffer(audioFile);
+  }
+  
+  /**
+   * Process an AudioBuffer to create a smaller WAV file
+   * @param {AudioBuffer} audioBuffer - The original audio buffer
+   * @return {Promise<Blob>} Promise resolving to WAV blob
+   */
+  function processAudioBuffer(audioBuffer) {
+    return new Promise((resolve, reject) => {
+      try {
+        // Convert to mono and downsample to 16kHz
+        const numChannels = 1; // Mono
+        const targetSampleRate = 16000; // 16kHz for speech
+        const originalSampleRate = audioBuffer.sampleRate;
+        
+        // Simple conversion to mono if we're not downsampling
+        if (originalSampleRate <= targetSampleRate) {
+          console.log("Converting to mono without downsampling");
+          // Just convert to mono
+          const monoData = convertToMono(audioBuffer);
+          const wavBlob = createWavBlob(monoData, originalSampleRate, numChannels);
+          resolve(wavBlob);
+          return;
+        }
+        
+        // Need to downsample
+        console.log("Downsampling from", originalSampleRate, "to", targetSampleRate);
+        const ratio = targetSampleRate / originalSampleRate;
+        const newLength = Math.round(audioBuffer.length * ratio);
+        
+        // Create offline context for processing
+        const offlineCtx = new OfflineAudioContext(numChannels, newLength, targetSampleRate);
+        const source = offlineCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(offlineCtx.destination);
+        source.start(0);
+        
+        // Process asynchronously
+        offlineCtx.startRendering().then(function(renderedBuffer) {
+          console.log("Rendering complete");
+          const monoData = renderedBuffer.getChannelData(0);
+          const wavBlob = createWavBlob(monoData, targetSampleRate, numChannels);
+          resolve(wavBlob);
+        }).catch(function(err) {
+          console.error("Rendering failed:", err);
+          reject(err);
+        });
+      } catch (err) {
+        console.error("Processing error:", err);
+        reject(err);
+      }
+    });
+  }
+  
+  /**
+   * Convert an AudioBuffer to mono
+   */
+  function convertToMono(audioBuffer) {
+    // If already mono, just return the data
+    if (audioBuffer.numberOfChannels === 1) {
+      return audioBuffer.getChannelData(0);
+    }
+    
+    // Mix down to mono
+    const monoData = new Float32Array(audioBuffer.length);
+    for (let i = 0; i < audioBuffer.length; i++) {
+      let sum = 0;
+      for (let channel = 0; channel < audioBuffer.numberOfChannels; channel++) {
+        sum += audioBuffer.getChannelData(channel)[i];
+      }
+      monoData[i] = sum / audioBuffer.numberOfChannels;
+    }
+    return monoData;
+  }
+  
+  /**
+   * Create a WAV blob from audio data
+   */
+  function createWavBlob(audioData, sampleRate, numChannels) {
+    const format = 1; // PCM format
+    const bitDepth = 16; // 16-bit
+    
+    // Create interleaved data (for mono this is just the same data)
+    const interleaved = (numChannels === 1) ? 
+      audioData : interleaveChannels([audioData], audioData.length);
+    
+    // Create WAV header and data
+    const dataView = encodeWAV(interleaved, format, sampleRate, numChannels, bitDepth);
+    
+    // Create the WAV blob
+    return new Blob([dataView], { type: 'audio/wav' });
+  }
+  
+  /**
+   * Interleaves multiple audio channels into a single array
+   */
+  function interleaveChannels(channelData, frameCount) {
+    const numChannels = channelData.length;
+    const result = new Float32Array(frameCount * numChannels);
+    
+    for (let i = 0; i < frameCount; i++) {
+      for (let channel = 0; channel < numChannels; channel++) {
+        result[i * numChannels + channel] = channelData[channel][i];
+      }
+    }
+    
+    return result;
+  }
+  
+  /**
+   * Encodes audio data into a WAV file format
+   */
+  function encodeWAV(samples, format, sampleRate, numChannels, bitDepth) {
+    const bytesPerSample = bitDepth / 8;
+    const blockAlign = numChannels * bytesPerSample;
+    
+    // Create the buffer for the WAV file
+    const buffer = new ArrayBuffer(44 + samples.length * bytesPerSample);
+    const view = new DataView(buffer);
+    
+    // Write the WAV container headers
+    writeString(view, 0, 'RIFF'); // ChunkID
+    view.setUint32(4, 36 + samples.length * bytesPerSample, true); // ChunkSize
+    writeString(view, 8, 'WAVE'); // Format
+    writeString(view, 12, 'fmt '); // Subchunk1ID
+    view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+    view.setUint16(20, format, true); // AudioFormat (1 for PCM)
+    view.setUint16(22, numChannels, true); // NumChannels
+    view.setUint32(24, sampleRate, true); // SampleRate
+    view.setUint32(28, sampleRate * blockAlign, true); // ByteRate
+    view.setUint16(32, blockAlign, true); // BlockAlign
+    view.setUint16(34, bitDepth, true); // BitsPerSample
+    writeString(view, 36, 'data'); // Subchunk2ID
+    view.setUint32(40, samples.length * bytesPerSample, true); // Subchunk2Size
+    
+    // Write the PCM samples
+    floatTo16BitPCM(view, 44, samples);
+    
+    return view;
+  }
+  
+  /**
+   * Writes a string to a DataView at the specified offset
+   */
+  function writeString(view, offset, string) {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i));
+    }
+  }
+  
+  /**
+   * Converts Float32Array samples to 16-bit PCM
+   */
+  function floatTo16BitPCM(output, offset, input) {
+    for (let i = 0; i < input.length; i++, offset += 2) {
+      const s = Math.max(-1, Math.min(1, input[i]));
+      output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+    }
+  }
+  
   // --- Recording and Upload Logic ---
   let mediaRecorder, audioChunks = [], recordingTimer, recordingSeconds = 0, isRecording = false, currentVisitId = null;
+  let realtimeTranscriptChunks = [], transcriptUpdateInterval = null;
 
   document.addEventListener('DOMContentLoaded', function() {
-    // Tab switching
-    document.querySelectorAll('button[data-bs-toggle="tab"]').forEach(tabEl => {
-      tabEl.addEventListener('click', function(event) {
-        event.preventDefault();
-        document.querySelectorAll('.tab-pane').forEach(pane => pane.classList.remove('show', 'active'));
-        document.querySelector(this.getAttribute('data-bs-target')).classList.add('show', 'active');
-        document.querySelectorAll('.nav-link').forEach(link => link.classList.remove('active'));
-        this.classList.add('active');
-        if (this.id === 'visits-tab') loadVisits();
+    // Set up training feedback submission - simplified
+    const submitTrainingBtn = document.getElementById('submitTraining');
+    if (submitTrainingBtn) {
+      submitTrainingBtn.addEventListener('click', function() {
+        const improvedNote = document.getElementById('improvedNote').value.trim();
+        if (!improvedNote) {
+          alert('Please enter your improved version of the note.');
+          return;
+        }
+        
+        showLoadingOverlay('Submitting training data...');
+        google.script.run
+          .withSuccessHandler(function(result) {
+            hideLoadingOverlay();
+            if (result && result.success) {
+              alert('Thank you! Your improved note has been saved to help train the AI.');
+            } else {
+              alert('Error saving training data: ' + (result.error || 'Unknown error'));
+            }
+          })
+          .withFailureHandler(function(error) {
+            hideLoadingOverlay();
+            alert('Error: ' + error);
+          })
+          .addTrainingExample(window.currentTranscript, window.currentNote, improvedNote);
       });
-    });
-    setupEventListeners();
+    }
+    
+    // Mobile-specific event handlers
+    const isMobile = window.matchMedia("(max-width: 768px)").matches;
+    if (isMobile) {
+      // Adjust UI elements for better mobile experience
+      const realTimeTranscript = document.getElementById('realTimeTranscript');
+      if (realTimeTranscript) {
+        realTimeTranscript.style.maxHeight = '120px'; // Smaller height on mobile
+      }
+      
+      // Make buttons more touch-friendly
+      const buttons = document.querySelectorAll('.btn');
+      buttons.forEach(button => {
+        button.style.padding = '12px 16px';
+        button.style.fontSize = '16px';
+      });
+    }
+
+    // Set up direct event listeners instead of using setup functions
+    const recordButton = document.getElementById('recordButton');
+    if (recordButton) {
+      recordButton.addEventListener('click', toggleRecording);
+      console.log("Record button listener added");
+    }
+    
+    // Set up file input listener
+    const fileInput = document.getElementById('audioFileInput');
+    if (fileInput) {
+      fileInput.addEventListener('change', function() {
+        const fileName = document.getElementById('fileName');
+        if (fileName) {
+          fileName.textContent = this.files.length > 0 ? this.files[0].name : '';
+        }
+        
+        const generateButton = document.getElementById('generateButton');
+        if (generateButton) {
+          generateButton.disabled = !this.files.length;
+        }
+      });
+    }
+    
+    // Set up generate button
+    const generateButton = document.getElementById('generateButton');
+    if (generateButton) {
+      generateButton.addEventListener('click', processAudioFile);
+    }
+    
+    // We've removed the template selection UI in our simplified interface
+    // Add any additional event listeners for the simplified UI here if needed
+
+  
+    // Check for microphone permissions
     checkMicrophonePermission();
   });
 
-  function setupEventListeners() {
-    document.getElementById('recordButton').addEventListener('click', toggleRecording);
-    document.getElementById('audioFileInput').addEventListener('change', function() {
-      document.getElementById('uploadButton').disabled = !this.files.length;
-    });
-    document.getElementById('uploadButton').addEventListener('click', processAudioFile);
+  // Function to check microphone permissions
+  function checkMicrophonePermission() {
+    if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+      console.log("Checking microphone permission...");
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(function(stream) {
+          // Permission granted, stop the stream
+          stream.getTracks().forEach(track => track.stop());
+          console.log("Microphone permission granted");
+        })
+        .catch(function(err) {
+          console.error("Microphone permission denied:", err);
+          alert("Please allow microphone access to use the recording feature.");
+        });
+    } else {
+      console.error("getUserMedia not supported in this browser");
+      alert("Audio recording is not supported in your browser. Please try a different browser.");
+    }
   }
 
   function checkMicrophonePermission() {
@@ -48,26 +342,66 @@
       isRecording = true;
       document.getElementById('recordButton').innerHTML = '<i class="fas fa-stop"></i>';
       document.getElementById('recordButton').classList.add('recording');
-      document.getElementById('recordingStatus').textContent = 'Recording...';
-      document.getElementById('recordingTime').classList.remove('hidden');
+      
+      // --- Debugging Check --- 
+      const statusElement = document.getElementById('recordingStatus');
+      console.log('Attempting to find recordingStatus element:', statusElement);
+      if (!statusElement) {
+        console.error('CRITICAL: recordingStatus element NOT FOUND just before setting textContent!');
+        alert('Internal Error: Could not find status display element.'); // User-facing alert
+        // Optional: Clean up? Stop stream? 
+        return; // Stop further execution in this block
+      }
+      // --- End Debugging Check ---
+
+      statusElement.classList.remove('hidden'); // Also use the checked variable
+      
+      // Show real-time transcript container and initialize
+      document.getElementById('realTimeTranscript').style.display = 'block';
+      document.getElementById('transcriptText').innerHTML = '<span style="color: #28a745;">Recording started... Transcription will appear here.</span>';
+      realtimeTranscriptChunks = [];
+      
       recordingSeconds = 0; updateRecordingTime();
       recordingTimer = setInterval(updateRecordingTime, 1000);
-      mediaRecorder = new MediaRecorder(stream); audioChunks = [];
-      mediaRecorder.addEventListener('dataavailable', e => audioChunks.push(e.data));
+      
+      // Set up MediaRecorder with smaller time slices for more frequent updates
+      mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      audioChunks = [];
+      
+      // Handle audio data as it becomes available
+      mediaRecorder.addEventListener('dataavailable', function(e) {
+        if (e.data.size > 0) {
+          audioChunks.push(e.data);
+          
+          // Process this chunk for real-time transcription
+          // Only process every 3 seconds to avoid too many API calls
+          if (recordingSeconds > 0 && recordingSeconds % 3 === 0) {
+            processAudioChunk();
+          }
+        }
+      });
+      
       mediaRecorder.addEventListener('stop', function() {
         const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
         processRecordedAudio(audioBlob);
       });
-      mediaRecorder.start();
-    }).catch(err => alert('Error accessing microphone. Please check permissions.'));
+      
+      // Start recording with 1-second chunks
+      mediaRecorder.start(1000);
+    }).catch(err => {
+      console.error('Error accessing microphone:', err);
+      alert('Error accessing microphone: ' + err.name + ' - ' + err.message)
+    });
   }
   function stopRecording() {
     if (mediaRecorder && isRecording) {
       isRecording = false;
       document.getElementById('recordButton').innerHTML = '<i class="fas fa-microphone"></i>';
       document.getElementById('recordButton').classList.remove('recording');
-      document.getElementById('recordingStatus').textContent = 'Processing...';
+      document.getElementById('recordingStatus').classList.add('hidden');
       clearInterval(recordingTimer);
+      
+      // Stop the media recorder
       mediaRecorder.stop();
       mediaRecorder.stream.getTracks().forEach(track => track.stop());
     }
@@ -78,61 +412,295 @@
     const s = String(recordingSeconds % 60).padStart(2, '0');
     document.getElementById('recordingTime').textContent = `${m}:${s}`;
   }
-  function processRecordedAudio(audioBlob) {
-    showLoadingOverlay('Processing audio and generating clinical note...');
+  function processAudioChunk() {
+    if (!isRecording || audioChunks.length === 0) return;
+    
+    // Create a blob from the accumulated chunks
+    const currentAudioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+    
+    // Show processing indicator
+    const transcriptElement = document.getElementById('transcriptText');
+    if (transcriptElement) {
+      if (realtimeTranscriptChunks.length === 0) {
+        transcriptElement.innerHTML = '<span style="color: #28a745;">Processing audio...</span>';
+      } else {
+        // Add a small indicator that we're processing more
+        const processingIndicator = document.createElement('span');
+        processingIndicator.className = 'processing-indicator';
+        processingIndicator.innerHTML = ' <i class="fas fa-circle-notch fa-spin"></i>';
+        transcriptElement.appendChild(processingIndicator);
+      }
+    }
+    
+    // Convert blob to base64
     const reader = new FileReader();
-    reader.readAsDataURL(audioBlob);
     reader.onloadend = function() {
-      google.script.run.withSuccessHandler(handleProcessingSuccess).withFailureHandler(handleProcessingError)
-        .processAudio(reader.result, audioBlob.type);
+      const base64Audio = reader.result.split(',')[1];
+      if (!base64Audio) {
+        console.error('Error reading audio chunk for real-time transcription');
+        return;
+      }
+      
+      // Get specialty for context
+      const specialty = document.getElementById('specialtySelect').value;
+      
+      // Call server function for real-time transcription
+      google.script.run
+        .withSuccessHandler(function(result) {
+          handleRealtimeTranscription(result);
+        })
+        .withFailureHandler(function(error) {
+          console.error('Real-time transcription error:', error);
+          // Show error in transcript area
+          const transcriptElement = document.getElementById('transcriptText');
+          if (transcriptElement) {
+            // Remove processing indicator if present
+            const indicators = transcriptElement.querySelectorAll('.processing-indicator');
+            indicators.forEach(indicator => indicator.remove());
+            
+            // Add error message
+            transcriptElement.innerHTML += '<span style="color: #dc3545;"> Error: ' + 
+              (typeof error === 'string' ? error : JSON.stringify(error)) + '</span>';
+          }
+        })
+        .transcribeRealtimeChunk(base64Audio, 'audio/webm', specialty);
     };
+    
+    reader.onerror = function() {
+      console.error('Error reading audio chunk');
+    };
+    
+    reader.readAsDataURL(currentAudioBlob);
+  }
+  
+  function handleRealtimeTranscription(result) {
+    if (!result || !result.transcript) {
+      console.log('No transcript returned from real-time processing');
+      return;
+    }
+    
+    // Get the transcript element
+    const transcriptElement = document.getElementById('transcriptText');
+    if (!transcriptElement) return;
+    
+    // Remove any processing indicators
+    const indicators = transcriptElement.querySelectorAll('.processing-indicator');
+    indicators.forEach(indicator => indicator.remove());
+    
+    // Skip silent segments
+    if (result.transcript === '[silence]') {
+      // Don't add silence to our transcript chunks
+      return;
+    }
+    
+    // Add the new chunk to our transcript if it's not empty or just whitespace
+    if (result.transcript.trim()) {
+      realtimeTranscriptChunks.push(result.transcript);
+    }
+    
+    // Update the display
+    if (realtimeTranscriptChunks.length > 0) {
+      // Join all chunks with proper spacing
+      const fullTranscript = realtimeTranscriptChunks.join(' ');
+      transcriptElement.innerHTML = fullTranscript;
+      
+      // Auto-scroll to the bottom
+      const container = document.getElementById('realTimeTranscript');
+      if (container) {
+        container.scrollTop = container.scrollHeight;
+      }
+    }
+  }
+  
+  function processRecordedAudio(audioBlob) {
+    // Hide the real-time transcript container
+    const transcriptElement = document.getElementById('realTimeTranscript');
+    if (transcriptElement) {
+      transcriptElement.style.display = 'none';
+    }
+    
+    showLoadingOverlay('Transcribing audio...');
+    const reader = new FileReader();
+    reader.onloadend = () => {
+        const base64Audio = reader.result.split(',')[1]; // Extract base64 data
+        if (!base64Audio) {
+          handleProcessingError("Error reading audio file for transcription.");
+          return;
+        }
+        
+        // Get specialty and detail level selections - with safety checks
+        let specialty = 'general';
+        let detailLevel = 'standard';
+        
+        const specialtyElement = document.getElementById('specialtySelect');
+        if (specialtyElement) {
+          specialty = specialtyElement.value;
+        }
+        
+        const detailLevelElement = document.getElementById('noteLengthSelect');
+        if (detailLevelElement) {
+          detailLevel = detailLevelElement.value;
+        }
+        
+        // Set default template values
+        const template = 'none';
+        const templateInstructions = '';
+        
+        // If we have a real-time transcript, use it as a hint
+        const realTimeTranscriptHint = realtimeTranscriptChunks.join(' ').trim();
+        
+        // Call backend with base64 string, specialty options, and template
+        google.script.run
+          .withSuccessHandler(handleProcessingSuccess)
+          .withFailureHandler(handleProcessingError)
+          .transcribeAudio(base64Audio, 'audio/webm', 'recording.webm', specialty, detailLevel, template, templateInstructions);
+    };
+    reader.onerror = () => { // Handle file reading errors
+        handleProcessingError("Error reading audio file.");
+    };
+    reader.readAsDataURL(audioBlob); // Start reading
   }
   function processAudioFile() {
     const fileInput = document.getElementById('audioFileInput');
-    if (!fileInput.files.length) return alert('Please select an audio file first.');
-    showLoadingOverlay('Processing audio file and generating clinical note...');
-    const reader = new FileReader();
-    reader.readAsDataURL(fileInput.files[0]);
-    reader.onloadend = function() {
-      google.script.run.withSuccessHandler(handleProcessingSuccess).withFailureHandler(handleProcessingError)
-        .processAudio(reader.result, fileInput.files[0].type);
-    };
-  }
-  function handleProcessingSuccess(result) {
-    hideLoadingOverlay();
-    if (result.success) {
-      currentVisitId = result.visitId;
-      displayResults(result);
+    if (!fileInput || !fileInput.files.length) {
+      alert('Please select an audio file first.');
+      return;
+    }
+    
+    const file = fileInput.files[0];
+    // Check file size
+    if (file.size > 10 * 1024 * 1024) { // 10MB
+      alert('File is too large. Please upload a file smaller than 10MB.');
+      return;
+    }
+    
+    showLoadingOverlay('Processing audio file...');
+    
+    // Get specialty and detail level selections with safety checks
+    let specialty = 'general';
+    let detailLevel = 'standard';
+    
+    const specialtyElement = document.getElementById('specialtySelect');
+    if (specialtyElement) {
+      specialty = specialtyElement.value;
+    }
+    
+    const detailLevelElement = document.getElementById('noteLengthSelect');
+    if (detailLevelElement) {
+      detailLevel = detailLevelElement.value;
+    }
+    
+    // Set default template values for simplified UI
+    const template = 'none';
+    const templateInstructions = '';
+    
+    // Process based on file type
+    const fileExtension = file.name.split('.').pop().toLowerCase();
+    
+    if (fileExtension === 'm4a') {
+      // For M4A files, convert client-side using Web Audio API
+      convertAudioToWav(file, function(wavBlob) {
+        const wavReader = new FileReader();
+        wavReader.onload = function(e) {
+          const base64Audio = e.target.result.split(',')[1];
+          google.script.run
+            .withSuccessHandler(handleProcessingSuccess)
+            .withFailureHandler(handleProcessingError)
+            .transcribeAudio(base64Audio, 'audio/wav', 'converted.wav', specialty, detailLevel, template, templateInstructions);
+        };
+        wavReader.readAsDataURL(wavBlob);
+      });
     } else {
-      alert('Error: ' + (result.error || 'Unknown error occurred'));
-      document.getElementById('recordingStatus').textContent = 'Error occurred. Please try again.';
+      // For other formats, process directly
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64Audio = reader.result.split(',')[1]; // Extract base64 data
+        if (!base64Audio) {
+          handleProcessingError("Error reading audio file for transcription.");
+          return;
+        }
+        google.script.run
+          .withSuccessHandler(handleProcessingSuccess)
+          .withFailureHandler(handleProcessingError)
+          .transcribeAudio(base64Audio, file.type, file.name, specialty, detailLevel, template, templateInstructions);
+      };
+      reader.onerror = () => { // Handle file reading errors
+        handleProcessingError("Error reading audio file.");
+      };
+      reader.readAsDataURL(file); // Start reading
     }
   }
-  function handleProcessingError(error) {
+  function handleProcessingSuccess(resultData) {
     hideLoadingOverlay();
-    alert('Error: ' + (error.message || 'An error occurred during processing.'));
-    document.getElementById('recordingStatus').textContent = 'Error occurred. Please try again.';
-  }
-  function displayResults(result) {
-    document.getElementById('resultContainer').classList.remove('hidden');
-    document.getElementById('transcriptContainer').textContent = result.transcript;
-    document.getElementById('notePreview').innerHTML = formatSOAPNote(result.soapNote);
-    document.getElementById('recordingStatus').textContent = 'Click to start recording';
-    document.getElementById('recordingTime').classList.add('hidden');
-    document.getElementById('audioFileInput').value = '';
-    document.getElementById('uploadButton').disabled = true;
-    if (result.parsedSoap) {
-      document.getElementById('subjectiveField').value = result.parsedSoap.subjective || '';
-      document.getElementById('objectiveField').value = result.parsedSoap.objective || '';
-      document.getElementById('assessmentField').value = result.parsedSoap.assessment || '';
-      document.getElementById('planField').value = result.parsedSoap.plan || '';
+    // Check if backend indicated success and has expected data
+    if (resultData && resultData.transcript !== undefined && resultData.note !== undefined) {
+        displayResults(resultData);
+    } else if (resultData && resultData.error) {
+        // Handle cases where backend returned an error structure via success path
+        handleProcessingError(resultData.error); 
+    } else {
+        // Handle unexpected success structure
+        handleProcessingError("Unexpected data structure received from backend (Success Path): " + JSON.stringify(resultData));
     }
+  }
+ 
+  function handleProcessingError(errorData) {
+    hideLoadingOverlay();
+    
+    // Check if this is a special 'still running' error
+    if (typeof errorData === 'object' && errorData !== null && errorData.status === 'STILL_RUNNING') {
+      // Show a more helpful message for long-running processes
+      alert('Your audio is still being processed.\n\n' + 
+            (errorData.message || 'The transcription is taking longer than expected.') + '\n\n' +
+            'The file has been uploaded and the transcription job is running on Google\'s servers.');
+      console.log("Long-running process detected:", errorData);
+      
+      // Update UI element with a more helpful message
+      const statusEl = document.getElementById('recordingStatus');
+      if (statusEl) statusEl.textContent = 'Processing in progress. Try again in a few minutes.';
+    } else {
+      // Standard error handling for other errors
+      const errorDetails = (typeof errorData === 'object' && errorData !== null) ? 
+                           JSON.stringify(errorData, null, 2) : String(errorData);
+      alert('Backend Error: \n' + errorDetails);
+      console.error("Backend Processing Error:", errorData);
+      
+      // Update UI element
+      const statusEl = document.getElementById('recordingStatus');
+      if (statusEl) statusEl.textContent = 'Error processing audio.';
+    }
+  }
+ 
+  // --- Result Display --- 
+  function displayResults(result) {
+    // Store the original data for training purposes
+    window.currentTranscript = result.transcript;
+    window.currentNote = result.note;
+    
+    // Display results
+    document.getElementById('transcriptResult').innerHTML = result.transcript.replace(/\n/g, '<br>');
+    document.getElementById('noteResult').innerHTML = formatSOAPNote(result.note);
+    
+    // Pre-fill the improved note textarea with the original note
+    document.getElementById('improvedNote').value = result.note;
+    
+    // Show the result section
+    document.getElementById('resultSection').style.display = 'block';
   }
   function formatSOAPNote(note) {
-    return note.replace(/Subjective:/g, '<strong class="text-primary">Subjective:</strong>')
-      .replace(/Objective:/g, '<strong class="text-primary">Objective:</strong>')
-      .replace(/Assessment:/g, '<strong class="text-primary">Assessment:</strong>')
-      .replace(/Plan:/g, '<strong class="text-primary">Plan:</strong>');
+    // Handle both the final SOAP string and the temporary placeholder object
+    if (typeof note === 'object' && note !== null && note.message) {
+      return `<p><i>(${note.message})</i></p>`; // Display the placeholder message
+    } else if (typeof note === 'string') {
+      // Format the final SOAP note string
+      return note.replace(/Subjective:/g, '<strong class="text-primary">Subjective:</strong>')
+        .replace(/Objective:/g, '<strong class="text-primary">Objective:</strong>')
+        .replace(/Assessment:/g, '<strong class="text-primary">Assessment:</strong>')
+        .replace(/Plan:/g, '<strong class="text-primary">Plan:</strong>');
+    } else {
+      // Fallback for unexpected input
+      return '<p><i>Invalid note format received.</i></p>';
+    }
   }
   // --- Note Editing ---
   function editNote() {
@@ -190,13 +758,35 @@
     }).updateVisit(currentVisitId, soapData);
   }
 
+  // --- UI Functions ---
+  function showTab(tabIdSelector) { 
+    document.querySelectorAll('.tab-content').forEach(pane => { 
+      pane.classList.remove('active'); 
+    });
+    const targetPane = document.querySelector(tabIdSelector); 
+    if (targetPane) {
+      targetPane.classList.add('active');
+    } else {
+      console.error(`showTab: Target pane with selector ${tabIdSelector} not found.`);
+    }
+
+    document.querySelectorAll('.tab-btn').forEach(btn => { 
+      btn.classList.remove('active');
+      const onclickAttr = btn.getAttribute('onclick');
+      const targetSelectorInButton = onclickAttr ? onclickAttr.match(/showTab\('([^']+)'\)/)?.[1] : null;
+      if (targetSelectorInButton === tabIdSelector) {
+        btn.classList.add('active');
+      }
+    });
+  }
+
   // --- Visit History ---
   function loadVisits() {
     document.getElementById('visitList').innerHTML =
       '<div class="text-center py-4 text-muted"><i class="fas fa-spinner fa-spin me-2"></i> Loading visits...</div>';
     google.script.run.withSuccessHandler(displayVisits).withFailureHandler(function(error) {
       document.getElementById('visitList').innerHTML =
-        '<div class="text-center py-4 text-danger">Error loading visits. Please try again.</div>';
+        '<div class="text-center py-4 text-danger">Error loading visits. Refresh page.</div>';
     }).getAllVisits();
   }
   function displayVisits(visits) {
@@ -320,17 +910,146 @@
       alert('Error: ' + (error.message || 'An error occurred while finalizing.'));
     }).updateVisit(currentVisitId, { status: 'Reviewed' });
   }
+  // --- Template Management ---
+  function displayTemplatesManager(templates) {
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('templatesModal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'templatesModal';
+      modal.style.position = 'fixed';
+      modal.style.top = '0';
+      modal.style.left = '0';
+      modal.style.width = '100%';
+      modal.style.height = '100%';
+      modal.style.backgroundColor = 'rgba(0,0,0,0.5)';
+      modal.style.display = 'flex';
+      modal.style.justifyContent = 'center';
+      modal.style.alignItems = 'center';
+      modal.style.zIndex = '1001';
+      
+      const modalContent = document.createElement('div');
+      modalContent.style.backgroundColor = 'white';
+      modalContent.style.padding = '20px';
+      modalContent.style.borderRadius = '5px';
+      modalContent.style.maxWidth = '600px';
+      modalContent.style.width = '90%';
+      modalContent.style.maxHeight = '80vh';
+      modalContent.style.overflowY = 'auto';
+      
+      const modalHeader = document.createElement('div');
+      modalHeader.innerHTML = '<h3>Manage Custom Templates</h3>';
+      
+      const closeButton = document.createElement('button');
+      closeButton.textContent = 'Close';
+      closeButton.className = 'btn btn-secondary';
+      closeButton.style.float = 'right';
+      closeButton.onclick = function() {
+        modal.style.display = 'none';
+      };
+      modalHeader.appendChild(closeButton);
+      
+      const modalBody = document.createElement('div');
+      modalBody.id = 'templatesModalBody';
+      
+      modalContent.appendChild(modalHeader);
+      modalContent.appendChild(modalBody);
+      modal.appendChild(modalContent);
+      document.body.appendChild(modal);
+    } else {
+      modal.style.display = 'flex';
+    }
+    
+    // Populate templates
+    const modalBody = document.getElementById('templatesModalBody');
+    modalBody.innerHTML = '';
+    
+    if (Object.keys(templates).length === 0) {
+      modalBody.innerHTML = '<p>No custom templates found.</p>';
+      return;
+    }
+    
+    const templatesList = document.createElement('div');
+    
+    for (const [name, instructions] of Object.entries(templates)) {
+      const templateItem = document.createElement('div');
+      templateItem.style.marginBottom = '15px';
+      templateItem.style.padding = '10px';
+      templateItem.style.border = '1px solid #ddd';
+      templateItem.style.borderRadius = '4px';
+      
+      const templateHeader = document.createElement('div');
+      templateHeader.style.display = 'flex';
+      templateHeader.style.justifyContent = 'space-between';
+      templateHeader.style.alignItems = 'center';
+      templateHeader.style.marginBottom = '10px';
+      
+      const templateName = document.createElement('h5');
+      templateName.textContent = name;
+      templateName.style.margin = '0';
+      
+      const deleteButton = document.createElement('button');
+      deleteButton.textContent = 'Delete';
+      deleteButton.className = 'btn btn-sm btn-danger';
+      deleteButton.onclick = function() {
+        if (confirm(`Are you sure you want to delete the template "${name}"?`)) {
+          deleteTemplate(name);
+        }
+      };
+      
+      templateHeader.appendChild(templateName);
+      templateHeader.appendChild(deleteButton);
+      
+      const templateInstructions = document.createElement('p');
+      templateInstructions.textContent = instructions;
+      templateInstructions.style.margin = '0';
+      templateInstructions.style.fontSize = '0.9rem';
+      
+      templateItem.appendChild(templateHeader);
+      templateItem.appendChild(templateInstructions);
+      templatesList.appendChild(templateItem);
+    }
+    
+    modalBody.appendChild(templatesList);
+  }
+
+  function deleteTemplate(templateName) {
+    showLoadingOverlay('Deleting template...');
+    google.script.run
+      .withSuccessHandler(function(response) {
+        hideLoadingOverlay();
+        if (response.success) {
+          alert('Template deleted successfully!');
+          displayTemplatesManager(response.templates);
+        } else {
+          alert('Error deleting template: ' + response.message);
+        }
+      })
+      .withFailureHandler(function(error) {
+        hideLoadingOverlay();
+        alert('Error deleting template: ' + error);
+      })
+      .deleteCustomTemplate(templateName);
+  }
+  
   // --- Loading Overlay ---
   function showLoadingOverlay(message) {
     let overlay = document.getElementById('loadingOverlay');
-    if (!overlay) {
+    let messageElement; 
+    if (!overlay) { 
       overlay = document.createElement('div');
       overlay.id = 'loadingOverlay';
-      overlay.className = 'loading-overlay';
       overlay.innerHTML = `<div class="spinner"></div><p id="loadingMessage"></p>`;
       document.body.appendChild(overlay);
+      messageElement = document.getElementById('loadingMessage'); 
+    } else {
+      messageElement = overlay.querySelector('#loadingMessage'); 
     }
-    document.getElementById('loadingMessage').textContent = message || 'Loading...';
+    if (messageElement) {
+      messageElement.textContent = message || 'Processing...';
+    } else {
+      console.error("Could not find loadingMessage element within the overlay.");
+    }
     overlay.style.display = 'flex';
   }
   function hideLoadingOverlay() {
