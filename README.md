@@ -125,6 +125,20 @@ The frontend is built with HTML, CSS, and JavaScript, with a focus on mobile usa
 - Multi-language support for international use
 - Enhanced AI for more accurate medical terminology recognition
 
+## Changelog
+
+### May 2025: Real-time Transcription and Mobile Optimization
+
+- Added chunk-based real-time transcription using Google Cloud Speech-to-Text API
+- Simplified UI for better mobile experience with larger touch targets
+- Removed template selection and management for streamlined workflow
+- Fixed "Cannot read properties of null" error in processRecordedAudio function
+- Added missing getOrCreateLogSpreadsheet function to fix logging to spreadsheet
+- Created comprehensive README.md with application documentation
+- Improved error handling for audio processing
+- Optimized CSS for mobile devices with responsive design
+- Enhanced recording UI with real-time feedback
+
 ---
 
 *This documentation is designed to provide context for AI systems and developers working with the ScribeAI codebase.*
